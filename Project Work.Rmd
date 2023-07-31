@@ -1,0 +1,745 @@
+---
+title: "Project Work"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+# Bayesian Learning and Monte Carlo Simulation Project
+
+## The dataset
+
+Load the dataset and the necessary libraries and compute the design matrix and outcome vector.
+
+```{r}
+options(warn = - 1)
+library(corrplot)
+library("dplyr")
+library(BAS)
+library("rjags")
+library(Metrics)
+library(ggplot2)
+library(ggpubr)
+
+housing <- read.csv("housing.csv") # Open dataset
+
+nrow(housing) # Previous number of rows
+housing = housing[housing$MEDV < 50, ] # Filter to remove MEDV outliers
+nrow(housing) # Final number of rows
+
+housing = subset(housing, select = -c(X)) # Remove index column
+
+summary(housing)
+
+sub.idx = 1:13  
+num.data = nrow(housing)
+
+# Define outcome and design matrix
+X <- as.matrix(housing[1:num.data,sub.idx])
+Y <- as.vector(housing[1:num.data,14])
+
+# Get dimensions
+N <- dim(X)[1]
+p <- dim(X)[2]
+```
+
+### Data analysis
+
+Some initial insights on the data.
+
+```{r}
+# Create correlation matrix of only MEDV
+correlation_matrix <- cor(housing[ , colnames(housing) != "MEDV"],
+                          housing$MEDV) 
+colnames(correlation_matrix) <- 'MEDV' # Renaming the column
+correlation_matrix <- t(correlation_matrix) # Transposing df to facilitate plot
+
+corrplot(correlation_matrix, tl.col = 'black', cl.pos='n', tl.srt = 60)
+
+```
+
+```{r}
+# Creating scatter plots of 4 interesting features
+p1 <- ggplot(housing, aes(x = MEDV, y = LSTAT)) + geom_point(color='#608ca5', alpha=0.6)
+p2 <- ggplot(housing, aes(x = MEDV, y = DIS)) + geom_point(color='#608ca5', alpha=0.6)
+p3 <- ggplot(housing, aes(x = MEDV, y = RM)) + geom_point(color='#608ca5', alpha=0.6)
+p4 <- ggplot(housing, aes(x = MEDV, y = INDUS)) + geom_point(color='#608ca5', alpha=0.6)
+
+# Arranging figure
+ggarrange(p1+ rremove("x.text") + rremove("x.title") + rremove("x.ticks"),
+          p2 + rremove("x.text") + rremove("x.title") + rremove("x.ticks"),
+          p3, p4, ncol = 2, nrow = 2)
+```
+
+From the following plot we can see that the distribution of the MEDV values over the interval from 0 to 50 could resemble a Gaussian distribution, this is why in the following analysis we considered a Gaussian distribution as the likelihood of the data, in particular in the JAGS approach.
+
+```{r}
+hist(housing$MEDV,seq(0,50,1),prob ="true", col='#608ca5',
+     main='Histogram of MEDV')
+lines(density(housing$MEDV), lty="dotted", col='black', lwd=2) 
+```
+
+## Regression
+
+### Standard Bayesian Regression
+
+#### G-Prior
+
+We execute Bayesian linear regression considering a G-prior over the parameters with $\alpha = 100$, $\alpha = 50$, $\alpha = 1$ and compute the mean value of the coefficients, their confidence interval and the probability of being in the model.
+
+##### Alpha=100
+
+```{r}
+alphapar=100
+medv.basGP = bas.lm(MEDV ~ ., data=housing, prior="g-prior", alpha=alphapar,
+                    modelprior=Bernoulli(1), include.always = ~ ., bestmodel=rep(1,5), 
+                    n.models = 1)
+betaGP = coef(medv.basGP)
+betaGP
+plot(betaGP, subset = 1:10, ask = F)
+confint(betaGP)
+
+plot(confint(betaGP),main=paste("G Prior alpha=",alphapar), cex.axis = 0.5,
+     col='#608ca5')
+```
+
+##### Alpha=50
+
+```{r}
+alphapar=50
+medv.basGP = bas.lm(MEDV ~ ., data=housing, prior="g-prior", alpha=alphapar,
+                    modelprior=Bernoulli(1), include.always = ~ ., bestmodel=rep(1,5), 
+                    n.models = 1)
+betaGP = coef(medv.basGP)
+betaGP
+plot(betaGP, subset = 1:10, ask = F)
+confint(betaGP)
+
+plot(confint(betaGP),main=paste("G Prior alpha=",alphapar), cex.axis = 0.5,
+     col='#608ca5')
+```
+
+##### Alpha=1
+
+```{r}
+alphapar=1
+medv.basGP = bas.lm(MEDV ~ ., data=housing, prior="g-prior", alpha=alphapar,
+                    modelprior=Bernoulli(1), include.always = ~ ., bestmodel=rep(1,5), 
+                    n.models = 1)
+betaGP = coef(medv.basGP)
+betaGP
+plot(betaGP, subset = 1:10, ask = F)
+confint(betaGP)
+
+plot(confint(betaGP),main=paste("G Prior alpha=",alphapar), cex.axis = 0.5,
+     col='#608ca5')
+```
+
+#### JZS Prior
+
+We execute Bayesian linear regression considering a JZS over the parameters and compute the mean value of the coefficients, their confidence interval and the probability of being in the model.
+
+```{r}
+medv.basZS = bas.lm(MEDV ~ ., data= housing, prior="JZS", modelprior=Bernoulli(1),
+                    include.always = ~ ., n.models = 1)
+betaZS = coef(medv.basZS)
+betaZS
+plot(betaZS,subset = 2:7, ask = F)
+confint(betaZS)
+
+plot(confint(betaZS), main="JZS prior", cex.axis = 0.5, col='#608ca5')
+```
+
+### BIC Regression with Model Selection
+
+Here we perform steb by step model selection using the BIC criterion, that is using a penalization step equal to $log(n)$.
+
+```{r}
+# Compute the total number of observations
+n = nrow(housing)
+
+# Full model using all predictors
+medv.lm = lm(MEDV ~ ., data= housing)
+summary(medv.lm)
+```
+
+```{r}
+# Perform BIC elimination from full model
+# k = log(n): penalty for BIC rather than AIC
+medv.step = step(medv.lm, k=log(n))
+```
+
+Then we use the BAS library to perform regression with BIC while defining a uniform distribution over the models. Then we select the best model according to the BIC criterion, the one with the largest logmarg, that consider the features CRIM, ZN, NOX, RM, DIS, RAD, TAX, PTRATIO, B, LSTAT.
+
+```{r}
+medv.BIC = bas.lm(MEDV ~ ., data = housing,
+                 prior = "BIC", modelprior = uniform())
+
+round(summary(medv.BIC), 3)
+
+# Find the index of the model with the largest logmarg
+best = which.max(medv.BIC$logmarg)
+# Retreat the index of variables in the best model, 0 is the intercept index
+bestmodel = medv.BIC$which[[best]]+1
+
+print(bestmodel)
+
+# 0 vector with length equal to the number of variables in the full model
+bestgamma = rep(0, medv.BIC$n.vars)
+# Change the indicator to 1 where variables are used
+bestgamma[bestmodel] = 1
+
+print(medv.BIC)
+```
+
+#### Best BIC
+
+Then we use parameter found for the best BIC model and fit the best BIC model over the data and we compute the confidence interval over the parameters given by the best BIC model.
+
+```{r}
+# Fit the best BIC model. Impose the variables to use via bestgamma
+medv.bestBIC = bas.lm(MEDV ~ ., data = housing, prior = "BIC",
+                     modelprior=uniform(), n.models=1, bestmodel=bestgamma)
+
+# Retreat coefficients information
+medv.coef = coef(medv.bestBIC)
+
+# Retreat bounds of credible intervals
+out = confint(medv.coef)[, 1:2]
+
+# Combine results and construct summary table
+coef.BIC = cbind(medv.coef$postmean, medv.coef$postsd, out)
+names = c("post mean", "post sd", colnames(out))
+colnames(coef.BIC) = names
+
+round(coef.BIC[bestmodel,], 3)
+
+plot(confint(coef(medv.bestBIC)), main="Best BIC", cex.axis = 0.5, col='#608ca5')
+
+# Plot best regressors
+par(mfrow=c(1,2))
+plot(medv.coef, subset = (bestmodel)[-1], ask = F)
+
+```
+
+### JAGS Spike and Slab
+
+We define a normal prior over the model and the spike and slab prior over the parameter and consider a normal distribution for the single data with mean depending on the parameters.
+
+```{r}
+# Define model
+cat(
+  "
+  model {
+    # Likelihood 
+    for (i in 1:N) {
+    	mu[i] <- beta0 + inprod(X[i,], beta)
+    	Y[i] ~ dnorm(mu[i],tau)
+    } 
+    
+    # Tracing the visited model
+    for (j in 1:p) {
+    	TempIndicator[j] <- g[j]*pow(2, j) 
+    }
+    mdl <- 1 + sum(TempIndicator[]) # model index in binary coding 
+  
+    # Gaussian distribution is parametrized in terms of precision parameter
+    beta0 ~ dnorm(0, 0.001)
+  
+    for(j in 1:p) {
+    	tprior[j] <- 1 / var_beta[j]
+    	bprior[j] <- 0
+    }
+  
+    for(j in 1:p) {
+    	beta_temp[j] ~ dnorm(bprior[j], tprior[j])
+    	g[j] ~ dbern(theta[j])
+    	theta[j] ~ dunif(0,1)
+    	beta[j] <- g[j] * beta_temp[j]	
+    }
+    tau ~ dgamma(0.001,0.001)
+  }
+  "
+, file = "models/SpSl_housing.bug")
+
+# Data to pass to JAGS
+data_JAGS_SpSl <- list(N = N, p = p, Y = Y, X = as.matrix(X), var_beta = rep(1, p))
+
+# A list of initial value for the MCMC algorithm 
+inits = function() {
+  list(beta0 = 0.0, beta_temp = rep(0,p), g = rep(0,p), theta = rep(0.5, p),
+       .RNG.seed = 321, .RNG.name = 'base::Wichmann-Hill') 
+}
+
+# Compile model (+ adaptation)
+model <- jags.model("models/SpSl_housing.bug", data = data_JAGS_SpSl,
+                    n.adapt = 1000, inits = inits, n.chains = 1) 
+```
+
+```{r}
+# if we want to perform a larger burn in with not adaptation.
+cat("  Updating...\n")
+update(model,n.iter=5000)
+
+# Posterior parameters JAGS has to track
+param <- c("beta0", "beta", "g", "mdl")
+
+# Number of iterations & thinning
+nit <- 50000
+thin <- 10
+```
+
+```{r}
+# Sampling (this may take a while)
+cat("  Sampling...\n")
+outputSpSl <- coda.samples(model = model,
+                       variable.names = param,
+                       n.iter = nit,
+                       thin = thin)
+
+# Save the chain
+save(outputSpSl, file = 'chains/SpSl.dat')
+```
+
+Traces of the MCMC obtained.
+
+```{r}
+# Plot command for coda::mcmc objects (4 at a time for visual purposes)
+for(K in 0:13){
+  plot(outputSpSl[,(2*K+1):(2*(K+1))])
+}
+```
+
+```{r}
+# Summary command for coda::mcmc objects
+summary(outputSpSl)
+```
+
+```{r}
+# Cast output as matrix
+outputSpSl <- as.matrix(outputSpSl)
+```
+
+```{r}
+param = outputSpSl[,c(14,1:13)]
+param_mean = apply(param, 2, "mean")
+param_confint =apply(param, 2, quantile, c(0.025, 0.975))
+
+plot(param_mean, main="Spike and Slab",ylim = c(-2,35),xlim = c(1,14),
+     cex.axis = 0.7,pch = 16, xaxt = "n", col='#608ca5')
+axis(1, at=1:14, labels=c("Intercept",colnames(X)),cex.axis = 0.5) 
+for(i in 1:14){
+  arrows(i, param_confint[1,i], i, param_confint[2,i],
+         length=0.05, angle=90, code=3, col='#608ca5')}
+```
+
+```{r}
+# We save the posterior chain of the inclusion variable in post_g
+post_g <- as.matrix(outputSpSl[,15:27])
+post_beta <- as.matrix(outputSpSl[,1:13])
+apply(post_g, 2, "mean")
+post_mean_g <- apply(post_g, 2, "mean")
+```
+
+### Median Probability Model
+
+We consider the posterior mean of the inclusion variable for each parameter and keep all parameter that have mean higher than $50\%$
+
+```{r}
+# Plot
+df <- data.frame(value = post_mean_g, var = colnames(X))
+p1 <- ggplot(data = df, aes(y = value, x = var, fill = var)) + 
+  geom_bar(stat="identity") + 
+  geom_hline(mapping = aes(yintercept = .5), col = 2, lwd = 1.1) +
+  coord_flip() + theme_minimal() + theme(legend.position="none") + 
+  ylab("Posterior Inclusion Probabilities") + xlab("")
+p1
+```
+
+```{r}
+# Select best model according to MPM
+mp_SpSl <- as.vector(which(post_mean_g > 0.5))
+post_mean_g[mp_SpSl]
+print(colnames(X)[mp_SpSl])
+```
+
+### Highest Posterior Density Model
+
+In the HPD model we select the model that was selected with the highest frequency in the Markov Chain.
+
+```{r}
+# Plot the mdl chain
+plot(outputSpSl[,"mdl"], pch = 20, xlab = "Iteration", ylab = "Model", col='#608ca5')
+```
+
+```{r}
+# Number of models visited
+length(unique( outputSpSl[,"mdl"]))
+```
+
+```{r}
+# Post frequency of visited models
+visited_models <- sort(table(outputSpSl[,"mdl"]), decreasing = TRUE)
+barplot(visited_models, xlab = "N° Model", ylab = "Posterior Frequency")
+```
+
+```{r}
+# Post frequency of visited models
+visited_models <- sort(table(outputSpSl[,"mdl"]), decreasing = TRUE)
+barplot(visited_models, xlab = "N° Model", ylab = "Posterior Frequency")
+```
+
+```{r}
+# Getting the unique profiles and sort the results
+unique_model <- unique(post_g, MARGIN = 1)
+freq <- apply(unique_model, 1,
+              function(b) sum(apply(post_g, MARGIN = 1, function(a) all(a == b))))
+cbind(unique_model[order(freq,decreasing = T),], sort(freq,decreasing = T))
+```
+
+```{r}
+colnames(X)[as.logical(unique_model[which.max(freq),])]
+HDP_SpSl <- c(1:13)[as.logical(unique_model[which.max(freq),])]
+```
+
+## Prediction
+
+We separate the dataset in a training set and a test set of 147 samples, following the standard 70%-30% split.
+
+```{r}
+set.seed(42)
+
+n <- 3*nrow(housing)/10
+
+sample <- sample.int(n=nrow(housing), size = floor(.7*nrow(housing)), replace = F)
+
+train <- housing[sample, ]
+test  <- housing[-sample, ]
+
+N_train <- dim(train)[1]
+N_test <- dim(test)[1]
+
+X_train <- as.matrix(train[1:N_train,sub.idx])
+Y_train <- as.vector(train[1:N_train,14])
+
+X_test <- as.matrix(test[1:N_test,sub.idx])
+Y_test <- as.vector(test[1:N_test,14])
+```
+
+### Standard Bayesian Regression
+
+#### JZS Prior
+
+We execute Bayesian Linear regression over the training set with the JZS prior and use obtained model to predict the value in the test set.
+
+```{r}
+medv.basZS2 = bas.lm(MEDV ~ ., data=train, prior="JZS", modelprior=Bernoulli(1),
+                     include.always = ~ ., n.models = 1)
+betaZS2 = coef(medv.basZS2)
+
+fittedZS <- predict(medv.basZS2, estimator = "BMA")
+prednewZS <- predict(medv.basZS2, newdata=test, estimator = "BMA")
+
+plot(fittedZS$Ypred[1:length(fittedZS$Ypred)], train$MEDV[1:length(fittedZS$Ypred)],pch = 16, xlab = expression(hat(mu[i])), ylab = 'Y', type="p",col='black',
+     main="Distribution of predictions - JZS")
+points(prednewZS$Ypred, test$MEDV, pch = 16, col="red" ,type="p")
+legend(x=1,y=45, legend=c("Train", "Test"), cex=0.8, col=c("black", "red"), pch=16)
+abline(0, 1)
+
+BPM_ZS <- predict(medv.basZS2, estimator = "BPM", newdata=test, se.fit = TRUE)
+confZS.fit <- confint(BPM_ZS, parm = "mean")
+confZS.pred <- confint(BPM_ZS, parm = "pred")
+
+plot(confZS.pred, main="Out of sample: pred. vs true - JZS", cex.axis = 0.5,
+     col='black')
+points(seq(1:n), test$MEDV, col="red", pch=20)
+legend(x=1,y=50, legend=c("Predicted", "True"), cex=0.8, col=c("black", "red"),
+       pch=c(18,20))
+
+rmseZS = rmse(confZS.fit,test$MEDV)
+maeZS = mae(confZS.fit,test$MEDV)
+mapeZS = mape(confZS.fit,test$MEDV)
+print(paste("Root Mean Square Error: ",rmseZS))
+print(paste("Mean Absolute Error: ",maeZS))
+print(paste("Mean Absolute Percentage Error: ",mapeZS*100))
+```
+
+#### G-Prior
+
+We execute Bayesian Linear regression over the training set with the G prior and use obtained model to predict the value in the test set.
+
+```{r}
+
+medv.basGP2 = bas.lm(MEDV ~ ., data=train, prior="g-prior", modelprior=Bernoulli(1),
+                     include.always = ~ ., n.models = 1)
+betaGP2 = coef(medv.basGP2)
+
+fittedGP<-predict(medv.basGP2, estimator = "BMA")
+prednewGP <- predict(medv.basGP2,newdata=test, estimator = "BMA")
+
+plot(fittedGP$Ypred[1:length(fittedGP$Ypred)], train$MEDV[1:length(fittedGP$Ypred)],pch = 16, xlab = expression(hat(mu[i])), ylab = 'Y', type="p",col='black',
+     main="Distribution of predictions - g-prior")
+points(prednewGP$Ypred, test$MEDV, pch = 16, col="red" ,type="p")
+legend(x=1,y=45, legend=c("Train", "Test"), cex=0.8, col=c("black", "red"), pch=16)
+abline(0, 1)
+
+BPM_GP <- predict(medv.basGP2, estimator = "BPM", newdata=test,se.fit = TRUE)
+confGP.fit <- confint(BPM_GP, parm = "mean")
+confGP.pred <- confint(BPM_GP, parm = "pred")
+
+plot(confGP.pred, main="Out of sample: pred. vs true - g-prior", cex.axis = 0.5,
+     col='black')
+points(seq(1:n), test$MEDV, col="red", pch=20)
+legend(x=1,y=50, legend=c("Predicted", "True"), cex=0.8, col=c("black", "red"),
+       pch=c(18,20))
+
+rmseGP = rmse(confGP.fit,test$MEDV)
+maeGP = mae(confGP.fit,test$MEDV)
+mapeGP = mape(confGP.fit,test$MEDV)
+print(paste("Root Mean Square Error: ",rmseGP))
+print(paste("Mean Absolute Error: ",maeGP))
+print(paste("Mean Absolute Percentage Error: ",mapeGP*100))
+```
+
+### BIC
+
+We execute Bayesian Linear regression over the training set with the parameter of the best BIC model and use the obtained model to predict the value in the test set.
+
+```{r}
+medv.bestBIC = bas.lm(MEDV ~ ., data = train, prior = "BIC",
+                     modelprior=uniform(), n.models=1, bestmodel=bestgamma)
+beta = coef(medv.bestBIC)
+
+fitted<-predict(medv.bestBIC, estimator = "BMA")
+prednew <- predict(medv.bestBIC,newdata=test, estimator = "BMA", se.fit=TRUE)
+
+plot(fitted$Ypred[1:length(fitted$Ypred)],train$MEDV[1:length(fitted$Ypred)],
+     pch = 16,xlab = expression(hat(mu[i])), ylab = 'Y',type="p",col='black',
+     main="Distribution of predictions - BIC")
+points(prednew$Ypred, test$MEDV, pch = 16, col="red", type="p")
+legend(x=1,y=45, legend=c("Train", "Test"), cex=0.8, col=c("black", "red"), pch=16)
+abline(0, 1)
+
+conf.fit <- confint(prednew, parm = "mean")
+conf.pred <- confint(prednew, parm = "pred")
+
+plot(conf.pred, main="Out of sample: pred. vs true - BIC", cex.axis = 0.5)
+points(seq(1:n), test$MEDV, col="red", pch=20)
+legend(x=1,y=50, legend=c("Predicted", "True"), cex=0.8, col=c("black", "red"),
+       pch=c(18,20))
+
+rmseBIC = rmse(conf.fit,test$MEDV)
+maeBIC = mae(conf.fit,test$MEDV)
+mapeBIC = mape(conf.fit,test$MEDV)
+print(paste("Root Mean Square Error: ",rmseBIC))
+print(paste("Mean Absolute Error: ",maeBIC))
+print(paste("Mean Absolute Percentage Error: ",mapeBIC*100))
+```
+
+### JAGS Spike and Slab
+
+Define the model for the prediction
+
+```{r}
+# Define model
+cat(
+  "
+  model {
+    # Likelihood 
+    for (i in 1:N) {
+    	mu[i] <- beta0 + inprod(X[i,], beta)
+    	Y[i] ~ dnorm(mu[i],tau)
+    } 
+    
+    #pred
+    for (i in 1:N_pred) {
+    	pred_mu[i] <- beta0 + inprod(X_pred[i,], beta)
+    	pred_Y[i] ~ dnorm(pred_mu[i],tau)
+    } 
+    # Gaussian distribution is parametrized in terms of precision parameter
+    beta0 ~ dnorm(0, 0.001)
+  
+    for(j in 1:p) {
+    	tprior[j] <- 1 / var_beta[j]
+    	bprior[j] <- 0
+    }
+  
+    for(j in 1:p) {
+    	beta[j] ~ dnorm(bprior[j], tprior[j])
+    }
+    tau ~ dgamma(0.001,0.001)
+  }
+  "
+, file = "models/pred_housing.bug")
+
+```
+
+#### Median Probability Model
+
+Use the feature selected by Median Probability on the spike and slab results
+
+```{r}
+# Data to pass to JAGS
+data_JAGS_pred <- list(N = N_train,N_pred=N_test, p = length(mp_SpSl), Y = Y_train, X = as.matrix(X_train)[,mp_SpSl],X_pred = as.matrix(X_test)[,mp_SpSl], var_beta = rep(1, length(mp_SpSl)))
+
+# A list of initial value for the MCMC algorithm 
+inits = function() {
+  list(beta0 = 0.0,.RNG.seed = 321, .RNG.name = 'base::Wichmann-Hill') 
+}
+
+# Compile model (+ adaptation)
+model <- jags.model("models/pred_housing.bug", data = data_JAGS_pred,
+                    n.adapt = 1000, inits = inits, n.chains = 1) 
+```
+
+```{r}
+#we want to perform a larger burn in with not adaptation.
+cat("  Updating...\n")
+update(model,n.iter=5000)
+
+# Posterior parameters JAGS has to track
+param <- c("beta0", "beta", "pred_Y")
+
+# Number of iterations & thinning
+nit <- 50000
+thin <- 10
+```
+
+```{r}
+# Sampling
+cat("  Sampling...\n")
+outputMPD <- coda.samples(model = model,
+                       variable.names = param,
+                       n.iter = nit,
+                       thin = thin)
+
+# Save the chain
+save(outputMPD, file = 'chains/pred.dat')
+```
+
+```{r}
+# Cast output as matrix
+outMP <- as.matrix(outputMPD)
+#compute the mean and confidence intervals of the parameters
+paramMP = outMP[,c(length(mp_SpSl)+1,1:length(mp_SpSl))]
+paramMP_mean = apply(paramMP, 2, "mean")
+paramMP_confint =apply(paramMP, 2, quantile, c(0.025, 0.975))
+plot(paramMP_mean, main="MDP",ylim = c(-5,50),xlim = c(1,14),cex.axis = 0.7,pch = 16,xaxt = "n")
+axis(1, at=1:(length(mp_SpSl)+1), labels=c("Intercept",colnames(X)[mp_SpSl]),cex.axis = 0.5) 
+for(i in 1:(length(mp_SpSl)+1)){
+  arrows(i, paramMP_confint[1,i], i, paramMP_confint[2,i], length=0.05, angle=90, code=3)
+}
+print(paramMP_mean)
+print(paramMP_confint)
+```
+
+```{r}
+#compute the mean and confidence interval of the predicted points
+predMP = outMP[,(length(mp_SpSl)+2):(length(mp_SpSl)+148)]
+predMP_mean = apply(predMP, 2, "mean")
+predMP_confint =apply(predMP, 2, quantile, c(0.025, 0.975))
+
+aa =hist(predMP[,1],seq(-100,100,1),probability=TRUE,)
+```
+
+```{r}
+plot(predMP_mean, main="Out of sample: pred. vs true - MP",ylim=c(0,50),
+     cex.axis = 0.7,pch = 16, col='black', xlab='case', ylab='predicted values')
+for(i in 1:147){
+  arrows(i, predMP_confint[1,i], i, predMP_confint[2,i], length=0.05, angle=90, code=3)
+}
+points(seq(1:147),Y_test,col="red",pch = 20)
+legend(x=1,y=51, legend=c("Predicted", "True"), cex=0.8, col=c("black", "red"), pch=16)
+
+rmseMP = rmse(predMP_mean,Y_test)
+maeMP = mae(predMP_mean,Y_test)
+mapeMP = mape(predMP_mean,Y_test)
+print(paste("Root Mean Square Error: ",rmseMP))
+print(paste("Mean Absolute Error: ",maeMP))
+print(paste("Mean Absolute Percentage Error: ",mapeMP*100))
+```
+
+#### Highest Posterior Density Model
+
+Use the feature selected by Highest Posterior Density on the spike and slab results
+
+```{r}
+# Data to pass to JAGS
+data_JAGS_pred <- list(N = N_train,N_pred=N_test, p = length(HDP_SpSl), Y = Y_train, X = as.matrix(X_train)[,HDP_SpSl],X_pred = as.matrix(X_test)[,HDP_SpSl], var_beta = rep(1, length(HDP_SpSl)))
+
+# A list of initial value for the MCMC algorithm 
+inits = function() {
+  list(beta0 = 0.0,.RNG.seed = 321, .RNG.name = 'base::Wichmann-Hill') 
+}
+
+# Compile model (+ adaptation)
+model <- jags.model("models/pred_housing.bug", data = data_JAGS_pred,
+                    n.adapt = 1000, inits = inits, n.chains = 1)
+```
+
+```{r}
+#we want to perform a larger burn in with not adaptation.
+cat("  Updating...\n")
+update(model,n.iter=5000)
+
+# Posterior parameters JAGS has to track
+param <- c("beta0", "beta", "pred_Y")
+
+# Number of iterations & thinning
+nit <- 50000
+thin <- 10
+```
+
+```{r}
+# Sampling
+cat("  Sampling...\n")
+outputHPD <- coda.samples(model = model,
+                       variable.names = param,
+                       n.iter = nit,
+                       thin = thin)
+
+# Save the chain
+save(outputHPD, file = 'chains/pred.dat')
+```
+
+```{r}
+# Cast output as matrix
+outHPD <- as.matrix(outputHPD)
+#compute the mean and confidence intervals of the parameters
+paramHPD = outHPD[,c(length(HDP_SpSl)+1,1:length(HDP_SpSl))]
+paramHPD_mean = apply(paramHPD, 2, "mean")
+paramHPD_confint =apply(paramHPD, 2, quantile, c(0.025, 0.975))
+plot(paramHPD_mean, main="HDP",ylim = c(-5,50),xlim = c(1,14),cex.axis = 0.7,pch = 16,xaxt = "n")
+axis(1, at=1:(length(HDP_SpSl)+1), labels=c("Intercept",colnames(X)[HDP_SpSl]),cex.axis = 0.5) 
+for(i in 1:(length(HDP_SpSl)+1)){
+  arrows(i, paramHPD_confint[1,i], i, paramHPD_confint[2,i], length=0.05, angle=90, code=3)
+}
+print(paramHPD_mean)
+print(paramHPD_confint)
+```
+
+```{r}
+#compute the mean and confidence intervals of the predicted points
+predHPD = outHPD[,(length(HDP_SpSl)+2):(length(HDP_SpSl)+148)]
+predHPD_mean = apply(predHPD, 2, "mean")
+predHPD_confint =apply(predHPD, 2, quantile, c(0.025, 0.975))
+
+aa = hist(predHPD[,1],seq(-100,100,1),probability=TRUE,)
+```
+
+```{r}
+plot(predHPD_mean, main="Out of sample: pred. vs true - HPD",ylim = c(0,50),cex.axis = 0.7,pch = 16, col='black', xlab='case', ylab='predicted values')
+for(i in 1:147){
+  arrows(i, predHPD_confint[1,i], i, predHPD_confint[2,i], length=0.05, angle=90, code=3)
+}
+points(seq(1:147),Y_test,col="red",pch = 20)
+legend(x=1,y=51, legend=c("Predicted", "True"), cex=0.8, col=c("black", "red"), pch=16)
+
+rmseHPD = rmse(predHPD_mean,Y_test)
+maeHPD = mae(predHPD_mean,Y_test)
+mapeHPD = mape(predHPD_mean,Y_test)
+print(paste("Root Mean Square Error: ",rmseHPD))
+print(paste("Mean Absolute Error: ",maeHPD))
+print(paste("Mean Absolute Percentage Error: ",mapeHPD*100))
+```

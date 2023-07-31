@@ -1,0 +1,27 @@
+
+  model {
+    # Likelihood 
+    for (i in 1:N) {
+    	mu[i] <- beta0 + inprod(X[i,], beta)
+    	Y[i] ~ dnorm(mu[i],tau)
+    } 
+    
+    #pred
+    for (i in 1:N_pred) {
+    	pred_mu[i] <- beta0 + inprod(X_pred[i,], beta)
+    	pred_Y[i] ~ dnorm(pred_mu[i],tau)
+    } 
+    # Gaussian distribution is parametrized in terms of precision parameter
+    beta0 ~ dnorm(0, 0.001)
+  
+    for(j in 1:p) {
+    	tprior[j] <- 1 / var_beta[j]
+    	bprior[j] <- 0
+    }
+  
+    for(j in 1:p) {
+    	beta[j] ~ dnorm(bprior[j], tprior[j])
+    }
+    tau ~ dgamma(0.001,0.001)
+  }
+  
